@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from anigen import delivery
 from anigen.cli import video_action
@@ -19,6 +20,12 @@ from tests.video.test_runtime import FakeProvider
 @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg required')
 class ManagedVideoDeliveryTests(unittest.TestCase):
     def test_reviewed_full_video_exports_then_withdraws_without_removing_history(self):
+        self._exercise_delivery()
+
+    def test_compaction_preserves_approval_and_detects_tampering(self):
+        self._exercise_delivery(compact=True)
+
+    def _exercise_delivery(self, compact=False):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             original = root / 'original.png'
@@ -98,7 +105,7 @@ class ManagedVideoDeliveryTests(unittest.TestCase):
             self.assertFalse((task/'final_output').exists())
             state = call('observe-av', {'target_id':'final',
                                        'reference_ids':list(runtime.review_context(state, 'final')[2])}, live=True)
-            call('final-review', review_report(state, 'final', 'observation_0002'))
+            state = call('final-review', review_report(state, 'final', 'observation_0002'))
             output = delivery.export(task)
             self.assertEqual(output.parent, task/'final_output')
             self.assertEqual(output.suffix, '.mp4')
@@ -110,6 +117,45 @@ class ManagedVideoDeliveryTests(unittest.TestCase):
             self.assertEqual(len(provider.submissions), 1)
             self.assertEqual(image_backend.calls, 1)
             self.assertEqual(observer.calls, 2)
+            if compact:
+                from anigen.storage import compact as compact_task, archive_approval
+                from anigen.workspace import TaskError
+                before = runtime.validate_final(state)
+                original_unlink = Path.unlink
+                interrupted = [False]
+                def stop_once(file, *args, **kwargs):
+                    if 'frames' in file.parts and not interrupted[0]:
+                        interrupted[0] = True
+                        raise OSError('synthetic cleanup interruption')
+                    return original_unlink(file, *args, **kwargs)
+                with patch.object(Path, 'unlink', stop_once):
+                    with self.assertRaisesRegex(OSError, 'synthetic cleanup'):
+                        compact_task(task)
+                self.assertTrue((task/'.archive.json').is_file())
+                result = compact_task(task)
+                self.assertGreater(result['removed_files'], 0)
+                self.assertEqual(archive_approval(task), before)
+                self.assertEqual(compact_task(task)['removed_files'], 0)
+                self.assertEqual(delivery.export(task), output)
+                self.assertEqual(len(provider.submissions), 1)
+                with self.assertRaisesRegex(TaskError, 'compacted'):
+                    call('invalidate', {'shot_id':'a', 'reason':'blocked after compaction'})
+                seal_path = task/'.archive.json'
+                original_seal = seal_path.read_text()
+                seal = json.loads(original_seal)
+                seal['approval']['status'] = 'changed'
+                seal_path.write_text(json.dumps(seal))
+                with self.assertRaisesRegex(TaskError, 'differs'):
+                    archive_approval(task)
+                seal_path.write_text(original_seal)
+                retained = task/'video'/state['id']/'attempt_0001'/'video.mp4'
+
+                retained.write_bytes(b'changed after approval')
+                refresh_index(task)
+                manifest = json.loads((task/'delivery.json').read_text())
+                self.assertFalse(manifest['versions'][0]['approval_valid'])
+                self.assertIsNone(manifest['current_version'])
+                return
             call('invalidate', {'shot_id':'a', 'reason':'Synthetic withdrawal regression'})
             refresh_index(task)
             manifest = json.loads((task/'delivery.json').read_text())

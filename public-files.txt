@@ -55,6 +55,7 @@ src/anigen/video/provider.py
 src/anigen/video/runtime.py
 src/anigen/video/settings.py
 src/anigen/workspace.py
+src/anigen/storage.py
 tests/__init__.py
 tests/image/__init__.py
 tests/image/test_derive.py
@@ -70,6 +71,7 @@ tests/test_delivery.py
 tests/test_publication.py
 tests/test_video_delivery.py
 tests/test_workspace.py
+tests/test_storage.py
 tests/video/__init__.py
 tests/video/legacy_fixture.py
 tests/video/test_directing.py

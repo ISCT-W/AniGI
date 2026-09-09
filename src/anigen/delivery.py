@@ -20,6 +20,10 @@ def _image_approval(task, round_id, candidate):
 
 def _video_approval(task, record):
     from .video import runtime
+    from .storage import archived, archive_approval
+    if archived(task):
+        approved = archive_approval(task)
+        return artifact_path(task, Path(approved["observation"]["media_path"])), approved
     runs = artifact_path(task, "video")
     with runtime.locked(record["video_run_id"], runs=runs) as (_, _, state):
         approved = runtime.validate_final(state)

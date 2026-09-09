@@ -138,11 +138,16 @@ class TaskStore:
 
     @contextmanager
     def _locked(self):
+        from ..storage import require_active
+        if (self.path.parent / "task.json").is_file():
+            require_active(self.path.parent)
         if not self.path.is_dir():
             raise StoreError("任务目录不存在")
         with self._path(".lock").open("a+b") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
+                if (self.path.parent / "task.json").is_file():
+                    require_active(self.path.parent)
                 yield
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
@@ -336,7 +341,7 @@ class TaskStore:
             self._path(folder).mkdir()
             input_records = []
             for i, (role, data, suffix) in enumerate(source_images, 1):
-                record = self._file(f"{folder}/inputs/{i:02d}-{role}{suffix}", data)
+                record = self._file(f"references/assets/{digest(data)}{suffix}", data, adopt=True)
                 record["role"] = role
                 input_records.append(record)
             attempt = {

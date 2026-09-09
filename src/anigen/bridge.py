@@ -14,6 +14,13 @@ from .image.generation import generate_round
 from .image.task_store import TaskStore, StoreError, immutable_write
 
 
+def _record_text(item, value):
+    if not item.get('readable_records'):
+        return _json(value)
+    from .workspace import readable_record
+    return "\n".join(readable_record(value)) + "\n"
+
+
 def _json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + '\n'
 
@@ -69,8 +76,10 @@ def prepare(state, item):
     inputs = [('base' if ref.get('is_base') else 'reference', ref['path']) for ref in request['inputs']]
     base = next((ref for ref in request['inputs'] if ref.get('is_base')), None)
     parent = str(Path(base['path']).relative_to(store.path)) if base else None
-    round_id = store.prepare(_json({'keyframe_id': item['id'], 'request': request}),
-                             _json(item['reference_snapshot']), request['backend'], request['model'],
+    if not item.get('shared_round'):
+        item['readable_records'] = True
+    round_id = store.prepare(_record_text(item, {'keyframe_id': item['id'], 'request': request}),
+                             _record_text(item, item['reference_snapshot']), request['backend'], request['model'],
                              inputs=inputs, parent=parent, submission=request['prompt'],
                              operation='edit' if base else 'generate',
                              aspect_ratio=request['aspect_ratio'],
@@ -93,9 +102,9 @@ def bound_attempt(state, item):
     snapshot = store.snapshot()
     attempt = next((a for a in snapshot['attempts'] if a['id'] == link['round_id']), None)
     _require(attempt is not None, 'shared image round is missing')
-    _require(_check_file(store, attempt['prompt']).read_text() == _json({'keyframe_id': item['id'], 'request': item['request']}),
+    _require(_check_file(store, attempt['prompt']).read_text() == _record_text(item, {'keyframe_id': item['id'], 'request': item['request']}),
              'shared image request binding changed')
-    _require(_check_file(store, attempt['reference']).read_text() == _json(item['reference_snapshot']),
+    _require(_check_file(store, attempt['reference']).read_text() == _record_text(item, item['reference_snapshot']),
              'shared image reference binding changed')
     for ref in attempt['inputs']:
         _check_file(store, ref)
@@ -169,7 +178,7 @@ def resolve(state, item, reconciliation):
 def review(state, item, report):
     store, attempt = bound_attempt(state, item)
     verdict = {'accept': 'pass', 'reject': 'fail', 'needs_review': 'unverified'}[report['decision']]
-    report_text = _json(report)
+    report_text = _record_text(item, report)
     match = next((r for r in reversed(attempt['reviews']) if r['candidate'] == item['candidate']
                   and r['report']['sha256'] == _digest(report_text.encode())), None)
     if match:
@@ -199,14 +208,14 @@ def verify(state, item, *, accepted=False):
                  and expected_path.read_text() == _json(expected), 'shared image handoff receipt changed')
     if accepted:
         approved = store.validate_pass(attempt['id'], item['candidate'])
-        _require(approved['review']['report']['sha256'] == _digest(_json(item['reviews'][-1]).encode()),
+        _require(approved['review']['report']['sha256'] == _digest(_record_text(item, item['reviews'][-1]).encode()),
                  'shared image review differs from opening-frame acceptance')
         return approved
 
 
 def _reopen_payload(item, reason):
     return {'keyframe_id': item['id'], 'reason': reason, 'image_sha256': item['image']['sha256'],
-            'request_hash': item['request_hash'], 'accepted_review_sha256': _digest(_json(item['reviews'][-1]).encode())}
+            'request_hash': item['request_hash'], 'accepted_review_sha256': _digest(_record_text(item, item['reviews'][-1]).encode())}
 
 
 def reopen_pending(state, item, reason):

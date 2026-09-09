@@ -202,44 +202,71 @@ def artifact_path(task, relative):
     return _contained(Path(task).resolve(), Path(task) / relative)
 
 
+def readable_record(value, level=0):
+    """Render structured facts as Markdown, preserving complete scalar text."""
+    if isinstance(value, dict):
+        rows = []
+        for key, item in value.items():
+            rows += ["#" * min(6, level + 2) + " " + str(key), ""]
+            rows += readable_record(item, level + 1)
+        return rows
+    if isinstance(value, list):
+        rows = []
+        for index, item in enumerate(value, 1):
+            rows += [f"**{index}.**", ""] + readable_record(item, level + 1)
+        return rows or ["无", ""]
+    if value is None:
+        return ["未知 / 不适用", ""]
+    return [str(value), ""]
+
+
 def _record_block(value):
-    # Indentation renders arbitrary prompts as text without interpreting Markdown.
-    return ["    " + line for line in json.dumps(value, ensure_ascii=False, indent=2).splitlines()] + [""]
+    return readable_record(value)
 
 
 def _video_details(task, state):
+    # One readable report per attempt. The task homepage is a navigation page.
+    from .storage import archived
+    if archived(task):
+        rows = ["已精简归档：保留历史审批与原始记录；临时检查缓存已清理。", ""]
+        reports = set(task.glob('video/*/*/review.md')) | set(task.glob('video/*/final-review.md'))
+        reports |= set(task.glob('director/*prompt*.md')) | set(task.glob('director/*review*.md'))
+        reports |= set(task.glob('video/*/observation_*/*.json'))
+        for report in sorted(reports):
+            link = quote(report.relative_to(task).as_posix(), safe='/')
+            rows += [f"- [{report.parent.name} / {report.name}]({link})"]
+        return rows + [""]
     lines = []
     for attempt in state.get("attempts", []):
-        lines += [f"### {attempt['id']}", "", f"Generation model: {attempt.get('endpoint', 'unknown')}",
-                  "Generation duration and unreported costs: unknown.", "", "Complete request:", ""]
-        lines += _record_block(attempt.get("arguments", {}))
-        lines += ["Director timeline, correction and revision reasons:", ""]
-        lines += _record_block({key: attempt.get(key) for key in ("director_timeline", "correction", "revision")})
-        lines += ["Review history:", ""] + _record_block(attempt.get("reviews", []))
-        for frame in attempt.get("observation", {}).get("frames", []):
-            frame_path = artifact_path(task, Path(frame["path"]))
-            link = quote(frame_path.relative_to(task).as_posix(), safe="/")
-            lines += [f"![Observed frame]({link})", ""]
-        result = attempt.get("result", {}) or {}
-        lines += ["Provider-reported usage and cost:", ""]
-        lines += _record_block({key: result.get(key) if result.get(key) is not None else "unknown"
-                                for key in ("usage", "cost")})
-    observations = state.get("av_observations", {})
-    if observations:
-        lines += ["### Complete visual observations", ""]
-        for identifier, observation in observations.items():
-            result = observation.get("result", {}) or {}
-            requested = observation.get("request", {}).get("requested_model")
-            lines += [f"#### {identifier}", ""]
-            lines += _record_block({"target": observation.get("request", {}).get("target_id"),
-                "status": observation.get("status"), "requested_model": requested,
-                "returned_model": result.get("returned_model", "unknown"),
-                "started_at": observation.get("started_at"), "completed_at": observation.get("completed_at"),
-                "usage": observation.get("usage") or "unknown",
-                "estimated_cost": observation.get("estimated_cost") if observation.get("estimated_cost") is not None else "unknown"})
-    if state.get("final"):
-        lines += ["### Full-film review history", ""] + _record_block(state["final"].get("reviews", []))
-    return lines
+        target = artifact_path(task, f"video/{state['id']}/{attempt['id']}/review.md")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        arguments = attempt.get("arguments", {})
+        report = [f"# {attempt['id']} · {attempt.get('shot_id', '')}", "",
+                  f"状态：{attempt['status']}；模型：{attempt.get('endpoint', '未知')}", "",
+                  "## 实际生成 prompt", "", str(arguments.get('prompt', '未知')), "",
+                  "## 生成设置与参考绑定", ""]
+        report += readable_record({"parameters": {k: v for k, v in arguments.items() if k != 'prompt'},
+                                  "references": attempt.get('reference_bindings', {})})
+        report += ["## 导演安排与修改理由", ""] + readable_record(
+            {k: attempt.get(k) for k in ('director_timeline', 'correction', 'revision')})
+        report += ["## 审查内容与结论", ""] + readable_record(attempt.get('reviews', []))
+        result = attempt.get('result') or {}
+        report += ["## 实际用量与费用", ""] + readable_record({k: result.get(k) for k in ('usage', 'cost')})
+        target.write_text("\n".join(report), encoding='utf-8')
+        link = quote(target.relative_to(task).as_posix(), safe='/')
+        lines += [f"- [{attempt['id']}：prompt、参考、审查与修改理由]({link})"]
+    for identifier, observation in state.get('av_observations', {}).items():
+        target = artifact_path(task, f"video/{state['id']}/{identifier}/review.md")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        report = [f"# 完整视频观察 {identifier}", ""] + readable_record(
+            {k: observation.get(k) for k in ('status', 'request', 'response', 'qualifications', 'limitations', 'usage')})
+        target.write_text("\n".join(report), encoding='utf-8')
+        lines += [f"- [{identifier}：观察内容]({quote(target.relative_to(task).as_posix(), safe='/')})"]
+    if state.get('final'):
+        target = artifact_path(task, f"video/{state['id']}/final-review.md")
+        target.write_text("\n".join(["# 全片终审", ""] + readable_record(state['final'].get('reviews', []))), encoding='utf-8')
+        lines += [f"- [全片终审]({quote(target.relative_to(task).as_posix(), safe='/')})"]
+    return lines + [""]
 
 
 def refresh_index(task):
@@ -272,7 +299,7 @@ def refresh_index(task):
                     relative_media = quote(media_path.relative_to(path).as_posix(), safe="/")
                     link = f"[Video]({relative_media})"
                 lines.append(f"| {item['id']} | {item.get('shot_id', '')} | {item['status']} | {link} |")
-            lines += ["", f"[Execution and review state]({relative}/state.json)", ""]
+            lines += [""]
             lines += _video_details(path, state)
     manifest = artifact_path(path, "delivery.json")
     if manifest.is_file():

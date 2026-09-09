@@ -35,6 +35,8 @@ def parser():
         if name == "video":
             action.add_argument("--input", type=Path)
             action.add_argument("--live", action="store_true")
+    compact = sub.add_parser("compact", help="Remove caches from a completed video; retain historical approval, disable production")
+    compact.add_argument("--task", type=Path, required=True)
     status = sub.add_parser("status", help="Refresh the local task index without generating")
     status.add_argument("--task", type=Path, required=True)
     output = sub.add_parser("deliver", help="Export the exact accepted final image or full film")
@@ -52,6 +54,8 @@ def parser():
 
 def video_action(task, action, data=None, *, live=False, **providers):
     from .video import runtime
+    from .storage import require_active
+    require_active(task)
     with task_lock(task) as (path, root, record), use_workspace(root):
         if record["purpose"] != "video":
             raise TaskError("Video actions require a video task")
@@ -104,10 +108,13 @@ def main(argv=None):
                     print(name)
         elif args.command == "image":
             return image_action(args.task, args.action, extra)
+        elif args.command == "compact":
+            from .storage import compact
+            print(json.dumps(compact(args.task)))
         elif args.command == "video":
-            if args.input and args.input.suffix.lower() != ".json":
+            if args.input and str(args.input) != "-" and args.input.suffix.lower() != ".json":
                 raise TaskError("Video action input must be JSON, never a credential file")
-            data = json.loads(args.input.read_text(encoding="utf-8")) if args.input else {}
+            data = json.loads(sys.stdin.read() if str(args.input) == "-" else args.input.read_text(encoding="utf-8")) if args.input else {}
             if not isinstance(data, dict):
                 raise TaskError("Video action input must be an object")
             state = video_action(args.task, args.action, data, live=args.live)

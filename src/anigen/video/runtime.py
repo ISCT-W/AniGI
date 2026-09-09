@@ -699,8 +699,13 @@ def freeze_evidence(directory, data):
 
 
 def dispatch(action, run_id, data=None, *, live=False, runs=RUNS, provider=None, observer=None, uploader=None, image_provider=None):
+    from ..storage import require_active
+    if runs is not None and (Path(runs).parent / "task.json").is_file():
+        require_active(Path(runs).parent)
     data = json.loads(json.dumps(data or {}, allow_nan=False))
     with locked(run_id, runs, create=action == "init") as (directory, path, state):
+        if (directory.parent.parent / "task.json").is_file():
+            require_active(directory.parent.parent)
         contract = task_contract(directory)
         enforce_offline(contract, action, provider=provider, observer=observer, uploader=uploader, image_provider=image_provider)
         if action == "init":

@@ -538,6 +538,10 @@ class TaskStoreTests(unittest.TestCase):
                             unknowns=[],
                         )
                     snapshot = self.task_dir / "rounds" / round_id / relative
+                    if relative.startswith("inputs/"):
+                        attempt = next(a for a in self.store.snapshot()["attempts"] if a["id"] == round_id)
+                        snapshot = self.task_dir / attempt["inputs"][0]["path"]
+                    original_bytes = snapshot.read_bytes()
                     snapshot.write_bytes(snapshot.read_bytes() + b"\nchanged")
                     remaining = self.store.recover()["remaining"]
                     with self.assertRaises(StoreError):
@@ -546,6 +550,7 @@ class TaskStoreTests(unittest.TestCase):
                         else:
                             self.store.promote(round_id, candidate="output-01.png")
                     self.assertEqual(self.store.recover()["remaining"], remaining)
+                    snapshot.write_bytes(original_bytes)
         self.assertFalse(list((self.task_dir / "final_output").glob("*.png")))
 
     def test_other_project_cannot_create_a_generation_reference_task(self) -> None:

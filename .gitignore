@@ -148,3 +148,6 @@ __pycache__/
 *.py[cod]
 .venv/
 .DS_Store
+
+!/src/anigen/storage.py
+!/tests/test_storage.py
